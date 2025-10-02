@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -92,18 +91,39 @@ func startHTTPServer(config *Config) error {
 		Name: config.McpProxy.Name,
 	}
 
+	// Create a single unified MCP server that aggregates all backend servers
+	unifiedServer, err := newMCPServer("unified", config.McpProxy, &MCPClientConfigV2{
+		Options: &OptionsV2{
+			LogEnabled: config.McpProxy.Options.LogEnabled,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Collect all auth tokens from all servers for unified auth
+	allAuthTokens := make([]string, 0)
+	tokenSet := make(map[string]struct{})
+
 	for name, clientConfig := range config.McpServers {
 		mcpClient, err := newMCPClient(name, clientConfig)
 		if err != nil {
 			return err
 		}
-		server, err := newMCPServer(name, config.McpProxy, clientConfig)
-		if err != nil {
-			return err
+
+		// Collect auth tokens
+		if clientConfig.Options != nil && len(clientConfig.Options.AuthTokens) > 0 {
+			for _, token := range clientConfig.Options.AuthTokens {
+				if _, exists := tokenSet[token]; !exists {
+					tokenSet[token] = struct{}{}
+					allAuthTokens = append(allAuthTokens, token)
+				}
+			}
 		}
+
 		errorGroup.Go(func() error {
 			log.Printf("<%s> Connecting", name)
-			addErr := mcpClient.addToMCPServer(ctx, info, server.mcpServer)
+			addErr := mcpClient.addToMCPServer(ctx, info, unifiedServer.mcpServer)
 			if addErr != nil {
 				log.Printf("<%s> Failed to add client to server: %v", name, addErr)
 				if clientConfig.Options.PanicIfInvalid.OrElse(false) {
@@ -111,25 +131,8 @@ func startHTTPServer(config *Config) error {
 				}
 				return nil
 			}
-			log.Printf("<%s> Connected", name)
+			log.Printf("<%s> Connected and added to unified server", name)
 
-			middlewares := make([]MiddlewareFunc, 0)
-			middlewares = append(middlewares, recoverMiddleware(name))
-			if clientConfig.Options.LogEnabled.OrElse(false) {
-				middlewares = append(middlewares, loggerMiddleware(name))
-			}
-			if len(clientConfig.Options.AuthTokens) > 0 {
-				middlewares = append(middlewares, newAuthMiddleware(clientConfig.Options.AuthTokens))
-			}
-			mcpRoute := path.Join(baseURL.Path, name)
-			if !strings.HasPrefix(mcpRoute, "/") {
-				mcpRoute = "/" + mcpRoute
-			}
-			if !strings.HasSuffix(mcpRoute, "/") {
-				mcpRoute += "/"
-			}
-			log.Printf("<%s> Handling requests at %s", name, mcpRoute)
-			httpMux.Handle(mcpRoute, chainMiddleware(server.handler, middlewares...))
 			httpServer.RegisterOnShutdown(func() {
 				log.Printf("<%s> Shutting down", name)
 				_ = mcpClient.Close()
@@ -138,12 +141,37 @@ func startHTTPServer(config *Config) error {
 		})
 	}
 
+	// Register the unified server at the root path
 	go func() {
 		err := errorGroup.Wait()
 		if err != nil {
 			log.Fatalf("Failed to add clients: %v", err)
 		}
-		log.Printf("All clients initialized")
+		log.Printf("All clients initialized and added to unified MCP server")
+
+		// Setup middlewares for the unified server
+		middlewares := make([]MiddlewareFunc, 0)
+		middlewares = append(middlewares, recoverMiddleware("unified"))
+		if config.McpProxy.Options.LogEnabled.OrElse(false) {
+			middlewares = append(middlewares, loggerMiddleware("unified"))
+		}
+		if len(allAuthTokens) > 0 {
+			middlewares = append(middlewares, newAuthMiddleware(allAuthTokens))
+		}
+
+		mcpRoute := baseURL.Path
+		if mcpRoute == "" {
+			mcpRoute = "/"
+		}
+		if !strings.HasPrefix(mcpRoute, "/") {
+			mcpRoute = "/" + mcpRoute
+		}
+		if !strings.HasSuffix(mcpRoute, "/") {
+			mcpRoute += "/"
+		}
+
+		log.Printf("Unified MCP server handling all requests at %s", mcpRoute)
+		httpMux.Handle(mcpRoute, chainMiddleware(unifiedServer.handler, middlewares...))
 	}()
 
 	go func() {
@@ -164,9 +192,9 @@ func startHTTPServer(config *Config) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer shutdownCancel()
 
-	err := httpServer.Shutdown(shutdownCtx)
-	if err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	shutdownErr := httpServer.Shutdown(shutdownCtx)
+	if shutdownErr != nil && !errors.Is(shutdownErr, http.ErrServerClosed) {
+		return shutdownErr
 	}
 	return nil
 }

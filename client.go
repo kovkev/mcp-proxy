@@ -180,7 +180,7 @@ func (c *Client) addToolsToServer(ctx context.Context, mcpServer *server.MCPServ
 
 	// Decide a prefix; could be configurable via options
 	prefix := c.name
-	sep := "_" // separator to avoid collisions
+	sep := "_____" // separator to avoid collisions
 
 	for {
 		tools, err := c.client.ListTools(ctx, toolsRequest)
