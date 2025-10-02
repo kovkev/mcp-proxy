@@ -178,6 +178,10 @@ func (c *Client) addToolsToServer(ctx context.Context, mcpServer *server.MCPServ
 		}
 	}
 
+	// Decide a prefix; could be configurable via options
+	prefix := c.name
+	sep := "_" // separator to avoid collisions
+
 	for {
 		tools, err := c.client.ListTools(ctx, toolsRequest)
 		if err != nil {
@@ -188,10 +192,30 @@ func (c *Client) addToolsToServer(ctx context.Context, mcpServer *server.MCPServ
 		}
 		log.Printf("<%s> Successfully listed %d tools", c.name, len(tools.Tools))
 		for _, tool := range tools.Tools {
-			if filterFunc(tool.Name) {
-				log.Printf("<%s> Adding tool %s", c.name, tool.Name)
-				mcpServer.AddTool(tool, c.client.CallTool)
+			if !filterFunc(tool.Name) {
+				continue
 			}
+
+			origName := tool.Name
+			prefixedName := fmt.Sprintf("%s%s%s", prefix, sep, origName)
+
+			// Clone and override the name
+			newTool := tool
+			newTool.Name = prefixedName
+
+			log.Printf("<%s> Adding tool %s (original: %s)", c.name, newTool.Name, origName)
+
+			// Wrap the call to strip the prefix before forwarding
+			// Capture origName in the closure to avoid variable capture issues
+			client := c.client // capture client reference
+			mcpServer.AddTool(newTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				// Defensive copy in case the request is reused
+				r := req
+				if strings.HasPrefix(r.Params.Name, prefix+sep) {
+					r.Params.Name = strings.TrimPrefix(r.Params.Name, prefix+sep)
+				}
+				return client.CallTool(ctx, r)
+			})
 		}
 		if tools.NextCursor == "" {
 			break
@@ -204,6 +228,9 @@ func (c *Client) addToolsToServer(ctx context.Context, mcpServer *server.MCPServ
 
 func (c *Client) addPromptsToServer(ctx context.Context, mcpServer *server.MCPServer) error {
 	promptsRequest := mcp.ListPromptsRequest{}
+	prefix := c.name
+	sep := "_"
+
 	for {
 		prompts, err := c.client.ListPrompts(ctx, promptsRequest)
 		if err != nil {
@@ -214,8 +241,24 @@ func (c *Client) addPromptsToServer(ctx context.Context, mcpServer *server.MCPSe
 		}
 		log.Printf("<%s> Successfully listed %d prompts", c.name, len(prompts.Prompts))
 		for _, prompt := range prompts.Prompts {
-			log.Printf("<%s> Adding prompt %s", c.name, prompt.Name)
-			mcpServer.AddPrompt(prompt, c.client.GetPrompt)
+			origName := prompt.Name
+			prefixedName := fmt.Sprintf("%s%s%s", prefix, sep, origName)
+
+			// Clone and override the name
+			newPrompt := prompt
+			newPrompt.Name = prefixedName
+
+			log.Printf("<%s> Adding prompt %s (original: %s)", c.name, newPrompt.Name, origName)
+
+			// Wrap the call to strip the prefix before forwarding
+			client := c.client // capture client reference
+			mcpServer.AddPrompt(newPrompt, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+				r := req
+				if strings.HasPrefix(r.Params.Name, prefix+sep) {
+					r.Params.Name = strings.TrimPrefix(r.Params.Name, prefix+sep)
+				}
+				return client.GetPrompt(ctx, r)
+			})
 		}
 		if prompts.NextCursor == "" {
 			break
@@ -227,6 +270,9 @@ func (c *Client) addPromptsToServer(ctx context.Context, mcpServer *server.MCPSe
 
 func (c *Client) addResourcesToServer(ctx context.Context, mcpServer *server.MCPServer) error {
 	resourcesRequest := mcp.ListResourcesRequest{}
+	prefix := c.name
+	sep := "_"
+
 	for {
 		resources, err := c.client.ListResources(ctx, resourcesRequest)
 		if err != nil {
@@ -237,9 +283,22 @@ func (c *Client) addResourcesToServer(ctx context.Context, mcpServer *server.MCP
 		}
 		log.Printf("<%s> Successfully listed %d resources", c.name, len(resources.Resources))
 		for _, resource := range resources.Resources {
-			log.Printf("<%s> Adding resource %s", c.name, resource.Name)
-			mcpServer.AddResource(resource, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				readResource, e := c.client.ReadResource(ctx, request)
+			origName := resource.Name
+			prefixedName := fmt.Sprintf("%s%s%s", prefix, sep, origName)
+
+			// Clone and override the name
+			newResource := resource
+			newResource.Name = prefixedName
+
+			log.Printf("<%s> Adding resource %s (original: %s)", c.name, newResource.Name, origName)
+
+			// Wrap the call to strip the prefix before forwarding
+			mcpServer.AddResource(newResource, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				r := request
+				if strings.HasPrefix(r.Params.URI, prefix+sep) {
+					r.Params.URI = strings.TrimPrefix(r.Params.URI, prefix+sep)
+				}
+				readResource, e := c.client.ReadResource(ctx, r)
 				if e != nil {
 					return nil, e
 				}
@@ -257,6 +316,9 @@ func (c *Client) addResourcesToServer(ctx context.Context, mcpServer *server.MCP
 
 func (c *Client) addResourceTemplatesToServer(ctx context.Context, mcpServer *server.MCPServer) error {
 	resourceTemplatesRequest := mcp.ListResourceTemplatesRequest{}
+	prefix := c.name
+	sep := "_"
+
 	for {
 		resourceTemplates, err := c.client.ListResourceTemplates(ctx, resourceTemplatesRequest)
 		if err != nil {
@@ -267,9 +329,22 @@ func (c *Client) addResourceTemplatesToServer(ctx context.Context, mcpServer *se
 		}
 		log.Printf("<%s> Successfully listed %d resource templates", c.name, len(resourceTemplates.ResourceTemplates))
 		for _, resourceTemplate := range resourceTemplates.ResourceTemplates {
-			log.Printf("<%s> Adding resource template %s", c.name, resourceTemplate.Name)
-			mcpServer.AddResourceTemplate(resourceTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				readResource, e := c.client.ReadResource(ctx, request)
+			origName := resourceTemplate.Name
+			prefixedName := fmt.Sprintf("%s%s%s", prefix, sep, origName)
+
+			// Clone and override the name
+			newResourceTemplate := resourceTemplate
+			newResourceTemplate.Name = prefixedName
+
+			log.Printf("<%s> Adding resource template %s (original: %s)", c.name, newResourceTemplate.Name, origName)
+
+			// Wrap the call to strip the prefix before forwarding
+			mcpServer.AddResourceTemplate(newResourceTemplate, func(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+				r := request
+				if strings.HasPrefix(r.Params.URI, prefix+sep) {
+					r.Params.URI = strings.TrimPrefix(r.Params.URI, prefix+sep)
+				}
+				readResource, e := c.client.ReadResource(ctx, r)
 				if e != nil {
 					return nil, e
 				}
